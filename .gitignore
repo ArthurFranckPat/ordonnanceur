@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+streamlit.stdout.log
+streamlit.stderr.log
+output/
