@@ -235,10 +235,6 @@ def style_commandes_table(df: pd.DataFrame):
     return df.style.apply(style_row, axis=1)
 
 
-_FEU_BG = {"VERT": "#dcfce7", "ORANGE": "#fde68a", "ROUGE": "#fecaca"}
-_FEU_FG = {"VERT": "#166534", "ORANGE": "#92400e", "ROUGE": "#991b1b"}
-_FEU_LABEL = {"VERT": "🟢 VERT", "ORANGE": "🟡 ORANGE", "ROUGE": "🔴 ROUGE"}
-
 _DISPLAY_COLS = [
     "N Commande", "Ligne", "Code Client", "Nom Client",
     "Article", "Designation",
@@ -249,22 +245,27 @@ _DISPLAY_COLS = [
     "Lancable", "Alerte",
 ]
 
+_FEU_COLS = {"Feu Matiere", "Feu Capacite", "Feu Ligne"}
+
 
 def _esc(value: object) -> str:
     return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _td(value: object, style: str = "", extra: str = "") -> str:
-    return f'<td style="padding:4px 8px;border:1px solid #e2e8f0;white-space:nowrap;{style}"{extra}>{_esc(value)}</td>'
-
-
-def _feu_td(value: object) -> str:
-    feu = str(value)
-    bg = _FEU_BG.get(feu, "")
-    fg = _FEU_FG.get(feu, "")
-    label = _FEU_LABEL.get(feu, _esc(value))
-    style = f"background:{bg};color:{fg};font-weight:600;"
-    return f'<td style="padding:4px 8px;border:1px solid #e2e8f0;white-space:nowrap;{style}">{label}</td>'
+def _badge(feu: str) -> str:
+    cfg = {
+        "VERT":   ("var(--green-bg)",  "var(--green-fg)",  "var(--green-ring)",  "●", "Vert"),
+        "ORANGE": ("var(--amber-bg)",  "var(--amber-fg)",  "var(--amber-ring)",  "●", "Orange"),
+        "ROUGE":  ("var(--red-bg)",    "var(--red-fg)",    "var(--red-ring)",    "●", "Rouge"),
+    }
+    if feu not in cfg:
+        return f'<span class="badge badge-neutral">{_esc(feu)}</span>'
+    bg, fg, ring, dot, label = cfg[feu]
+    return (
+        f'<span class="badge" style="background:{bg};color:{fg};box-shadow:0 0 0 1px {ring};">'
+        f'<span style="color:{fg};margin-right:4px;">{dot}</span>{label}'
+        f'</span>'
+    )
 
 
 def render_commandes_expandable(df: pd.DataFrame) -> None:
@@ -274,17 +275,6 @@ def render_commandes_expandable(df: pd.DataFrame) -> None:
 
     df = format_dates_for_display(df)
     cols = [c for c in _DISPLAY_COLS if c in df.columns]
-    feu_cols = {"Feu Matiere", "Feu Capacite", "Feu Ligne"}
-
-    header_cells = "".join(
-        f'<th style="padding:6px 8px;border:1px solid #cbd5e1;background:#3b5998;color:#fff;'
-        f'white-space:nowrap;text-align:left;">{_esc(c)}</th>'
-        for c in cols
-    )
-    header_toggle = (
-        '<th style="padding:6px 8px;border:1px solid #cbd5e1;background:#3b5998;'
-        'color:#fff;width:32px;"></th>'
-    )
 
     groups_with_children: set[int] = set()
     tmp_group = 0
@@ -295,60 +285,205 @@ def render_commandes_expandable(df: pd.DataFrame) -> None:
         else:
             groups_with_children.add(tmp_group)
 
+    thead_ths = '<th class="th-toggle"></th>' + "".join(
+        f'<th class="th">{_esc(c)}</th>' for c in cols
+    )
+
     tbody_rows: list[str] = []
     group_id = 0
-    empty_td = '<td style="padding:4px 8px;border:1px solid #e2e8f0;"></td>'
 
     for _, row in df.iterrows():
         is_se = str(row.get("Type Flux", "")) == "sous-ensemble"
         feu = str(row.get("Feu Ligne", ""))
-        bg = _FEU_BG.get(feu, "#ffffff") if not is_se else "#dbeafe"
-        fg = _FEU_FG.get(feu, "#1a202c") if not is_se else "#1e3a5f"
-        row_style = f"background:{bg};color:{fg};"
 
         if not is_se:
             group_id += 1
             current_group = group_id
 
+        if not is_se:
+            row_cls = {"VERT": "row-green", "ORANGE": "row-amber", "ROUGE": "row-red"}.get(feu, "row-base")
+        else:
+            row_cls = "row-child"
+
         cells = "".join(
-            _feu_td(row[c]) if c in feu_cols else _td(row[c], f"color:{fg};" if fg else "")
+            f'<td class="td">{_badge(str(row[c]))}</td>'
+            if c in _FEU_COLS
+            else f'<td class="td">{_esc(row[c])}</td>'
             for c in cols
         )
 
         if not is_se:
             if current_group in groups_with_children:
-                toggle_td = (
-                    f'<td style="padding:4px 8px;border:1px solid #e2e8f0;text-align:center;'
-                    f'cursor:pointer;user-select:none;font-size:11px;" '
-                    f'onclick="var g=this.getAttribute(\'data-gid\');'
-                    f'var rows=document.querySelectorAll(\'tr[data-group=\\\'\'+g+\'\\\']\');'
-                    f'var open=this.textContent===\'＋\';'
-                    f'rows.forEach(function(r){{r.style.display=open?\'\':\'none\'}});'
-                    f'this.textContent=open?\'－\':\'＋\';" '
-                    f'data-gid="{current_group}">＋</td>'
+                btn = (
+                    f'<td class="td-toggle">'
+                    f'<button class="toggle-btn" data-gid="{current_group}" onclick="toggle(this)">+'
+                    f'</button></td>'
                 )
             else:
-                toggle_td = empty_td
-            tbody_rows.append(f'<tr style="{row_style}">{toggle_td}{cells}</tr>')
+                btn = '<td class="td-toggle"></td>'
+            tbody_rows.append(f'<tr class="tr {row_cls}">{btn}{cells}</tr>')
         else:
             tbody_rows.append(
-                f'<tr data-group="{current_group}" style="{row_style}font-style:italic;display:none;">'
-                f'{empty_td}{cells}</tr>'
+                f'<tr class="tr row-child" data-group="{current_group}">'
+                f'<td class="td-toggle td-child-indent"></td>{cells}</tr>'
             )
 
     n_rows = len(df)
-    height = min(max(n_rows * 32 + 60, 200), 700)
-    html = f"""<!DOCTYPE html><html><body style="margin:0;padding:0;font-family:sans-serif;">
-<div style="overflow-x:auto;overflow-y:auto;max-height:{height}px;">
-<table style="border-collapse:collapse;font-size:13px;width:100%;">
-<thead><tr>{header_toggle}{header_cells}</tr></thead>
-<tbody>{"".join(tbody_rows)}</tbody>
-</table>
+    height = min(max(n_rows * 36 + 52, 200), 640)
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root {{
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --radius: 8px;
+    --border: #e4e4e7;
+    --header-bg: #18181b;
+    --header-fg: #fafafa;
+    --row-hover: #f4f4f5;
+    --green-bg: #f0fdf4; --green-fg: #15803d; --green-ring: #bbf7d0; --green-row: #f0fdf4;
+    --amber-bg: #fffbeb; --amber-fg: #b45309; --amber-ring: #fde68a; --amber-row: #fffbeb;
+    --red-bg:   #fff1f2; --red-fg:   #be123c; --red-ring:   #fecdd3; --red-row:   #fff1f2;
+    --child-bg: #f8fafc;
+    --child-fg: #475569;
+    --child-border: #e2e8f0;
+  }}
+  *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ font-family: var(--font); font-size: 13px; background: #fff; }}
+
+  .wrapper {{
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    overflow-x: auto;
+    max-height: {height}px;
+    overflow-y: auto;
+    box-shadow: 0 1px 3px 0 rgb(0 0 0 / .06), 0 1px 2px -1px rgb(0 0 0 / .06);
+  }}
+
+  table {{
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 900px;
+  }}
+
+  thead {{ position: sticky; top: 0; z-index: 2; }}
+
+  .th-toggle {{
+    width: 36px;
+    background: var(--header-bg);
+    border-bottom: 1px solid #3f3f46;
+  }}
+  .th {{
+    padding: 10px 12px;
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--header-fg);
+    background: var(--header-bg);
+    border-bottom: 1px solid #3f3f46;
+    white-space: nowrap;
+  }}
+
+  .tr {{ border-bottom: 1px solid var(--border); transition: background .1s; }}
+  .tr:last-child {{ border-bottom: none; }}
+
+  .row-base:hover  {{ background: var(--row-hover); }}
+  .row-green       {{ background: var(--green-row); }}
+  .row-green:hover {{ background: #dcfce7; }}
+  .row-amber       {{ background: var(--amber-row); }}
+  .row-amber:hover {{ background: #fef3c7; }}
+  .row-red         {{ background: var(--red-row); }}
+  .row-red:hover   {{ background: #ffe4e6; }}
+
+  .row-child {{
+    background: var(--child-bg);
+    border-left: 3px solid #cbd5e1;
+  }}
+  .row-child .td {{ color: var(--child-fg); font-style: italic; font-size: 12px; }}
+
+  .td {{
+    padding: 8px 12px;
+    white-space: nowrap;
+    vertical-align: middle;
+  }}
+  .td-toggle {{
+    width: 36px;
+    text-align: center;
+    vertical-align: middle;
+    padding: 0 4px;
+  }}
+  .td-child-indent {{ background: var(--child-bg); }}
+
+  .toggle-btn {{
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+    border: 1px solid #d4d4d8;
+    background: #fff;
+    color: #71717a;
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1;
+    cursor: pointer;
+    transition: background .12s, color .12s, border-color .12s;
+    padding: 0;
+  }}
+  .toggle-btn:hover {{
+    background: #f4f4f5;
+    border-color: #a1a1aa;
+    color: #18181b;
+  }}
+  .toggle-btn.open {{
+    background: #18181b;
+    border-color: #18181b;
+    color: #fff;
+  }}
+
+  .badge {{
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 9999px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .03em;
+    white-space: nowrap;
+  }}
+  .badge-neutral {{
+    background: #f4f4f5;
+    color: #52525b;
+    box-shadow: 0 0 0 1px #e4e4e7;
+  }}
+</style>
+</head>
+<body>
+<div class="wrapper">
+  <table>
+    <thead><tr>{thead_ths}</tr></thead>
+    <tbody>{"".join(tbody_rows)}</tbody>
+  </table>
 </div>
 <script>
-document.querySelectorAll('tr[data-group]').forEach(function(r){{r.style.display='none';}});
+  document.querySelectorAll('tr[data-group]').forEach(function(r) {{ r.style.display = 'none'; }});
+  function toggle(btn) {{
+    var gid = btn.getAttribute('data-gid');
+    var rows = document.querySelectorAll('tr[data-group="' + gid + '"]');
+    var isOpen = btn.classList.contains('open');
+    rows.forEach(function(r) {{ r.style.display = isOpen ? 'none' : ''; }});
+    btn.classList.toggle('open', !isOpen);
+    btn.textContent = isOpen ? '+' : '−';
+  }}
 </script>
-</body></html>"""
+</body>
+</html>"""
     components.html(html, height=height + 20, scrolling=False)
 
 
