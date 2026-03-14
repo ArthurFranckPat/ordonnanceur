@@ -132,6 +132,90 @@ def format_dates_for_display(df: pd.DataFrame) -> pd.DataFrame:
     return display_df
 
 
+def build_plan_charge_matrix(df_plan: pd.DataFrame, metric_suffix: str) -> pd.DataFrame:
+    if df_plan.empty:
+        return df_plan
+    value_columns = [column for column in df_plan.columns if column.endswith(metric_suffix)]
+    if not value_columns:
+        return pd.DataFrame()
+
+    melted = df_plan[["Semaine", *value_columns]].melt(
+        id_vars=["Semaine"],
+        value_vars=value_columns,
+        var_name="Poste",
+        value_name="Valeur",
+    )
+    melted["Poste"] = melted["Poste"].str.replace(metric_suffix, "", regex=False)
+    pivot = melted.pivot(index="Poste", columns="Semaine", values="Valeur")
+    pivot = pivot.sort_index()
+    return pivot.round(0)
+
+
+def load_poste_labels(params: dict) -> dict[str, str]:
+    gammes_path = Path(params["dossier_data"]) / "gammes.csv"
+    if not gammes_path.exists():
+        return {}
+
+    gammes = pd.read_csv(
+        gammes_path,
+        sep=params["separateur_csv"],
+        encoding=params["encoding"],
+        skipinitialspace=True,
+    )
+    gammes = gammes.loc[:, ~gammes.columns.str.startswith("Unnamed")]
+    if len(gammes.columns) != 4:
+        return {}
+
+    gammes.columns = ["itmref", "poste_charge", "libelle_poste", "cadence"]
+    gammes["poste_charge"] = gammes["poste_charge"].astype(str).str.strip()
+    gammes["libelle_poste"] = gammes["libelle_poste"].astype(str).str.strip()
+    label_map: dict[str, str] = {}
+
+    for poste, rows in gammes.groupby("poste_charge"):
+        labels = [label for label in rows["libelle_poste"].dropna().tolist() if label and label.lower() != "nan"]
+        if labels:
+            label_map[str(poste)] = labels[0]
+
+    return label_map
+
+
+def label_plan_charge_index(df: pd.DataFrame, label_map: dict[str, str]) -> pd.DataFrame:
+    if df.empty:
+        return df
+    labeled = df.copy()
+    labeled.index = [
+        f"{poste} - {label_map[poste]}" if poste in label_map else poste
+        for poste in labeled.index
+    ]
+    return labeled
+
+
+def style_plan_charge_matrix(df: pd.DataFrame, capacity_by_week: dict[str, float], metric_mode: str):
+    def style_frame(frame: pd.DataFrame):
+        styled = pd.DataFrame("", index=frame.index, columns=frame.columns)
+        for column_name in frame.columns:
+            capacity = float(capacity_by_week.get(str(column_name), 0.0) or 0.0)
+            for row_name in frame.index:
+                value = frame.at[row_name, column_name]
+                if pd.isna(value):
+                    continue
+                try:
+                    numeric_value = float(value)
+                except (TypeError, ValueError):
+                    continue
+
+                ratio = numeric_value if metric_mode != "Heures" else ((numeric_value / capacity * 100.0) if capacity > 0 else 0.0)
+                if ratio > 100:
+                    styled.at[row_name, column_name] = "background-color: #fecaca; color: #991b1b;"
+                elif ratio >= 80:
+                    styled.at[row_name, column_name] = "background-color: #fde68a; color: #92400e;"
+                elif ratio > 0:
+                    styled.at[row_name, column_name] = "background-color: #dcfce7; color: #166534;"
+        return styled
+
+    return df.style.apply(style_frame, axis=None).format("{:.1f}")
+
+
 def render_week_focus_gantt(df_charge_segments: pd.DataFrame, df_plan: pd.DataFrame) -> None:
     if df_charge_segments.empty or df_plan.empty:
         st.warning("Aucune charge OF a afficher.")
@@ -498,7 +582,22 @@ def main() -> None:
         if df_plan.empty:
             st.warning("Aucun plan de charge genere.")
         else:
-            st.dataframe(format_dates_for_display(df_plan), use_container_width=True, height=560)
+            poste_labels = load_poste_labels(params)
+            capacity_by_week = {
+                str(row["Semaine"]): float(row["Capa (h/sem)"])
+                for _, row in df_plan[["Semaine", "Capa (h/sem)"]].iterrows()
+            }
+            display_mode = st.radio(
+                "Affichage",
+                options=["Heures", "Pourcentage (%)"],
+                horizontal=True,
+                key="plan_charge_display_mode",
+            )
+            suffix = " (h)" if display_mode == "Heures" else " (%)"
+            plan_matrix = build_plan_charge_matrix(df_plan, suffix)
+            plan_matrix = label_plan_charge_index(plan_matrix, poste_labels)
+            styled_plan_matrix = style_plan_charge_matrix(plan_matrix, capacity_by_week, display_mode)
+            st.dataframe(styled_plan_matrix, use_container_width=True, height=560)
 
     with tabs[4]:
         st.subheader("Composants critiques")
