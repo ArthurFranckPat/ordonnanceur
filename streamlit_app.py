@@ -234,9 +234,11 @@ def style_commandes_table(df: pd.DataFrame):
     return df.style.apply(style_row, axis=1)
 
 
-FEU_EMOJI = {"VERT": "🟢", "ORANGE": "🟡", "ROUGE": "🔴"}
+_FEU_BG = {"VERT": "#dcfce7", "ORANGE": "#fde68a", "ROUGE": "#fecaca"}
+_FEU_FG = {"VERT": "#166534", "ORANGE": "#92400e", "ROUGE": "#991b1b"}
+_FEU_LABEL = {"VERT": "🟢 VERT", "ORANGE": "🟡 ORANGE", "ROUGE": "🔴 ROUGE"}
 
-COLS_PARENT = [
+_DISPLAY_COLS = [
     "N Commande", "Ligne", "Code Client", "Nom Client",
     "Article", "Designation",
     "Qte Commandee", "Qte Restante",
@@ -246,19 +248,22 @@ COLS_PARENT = [
     "Lancable", "Alerte",
 ]
 
-COLS_ENFANT = [
-    "Article", "Designation",
-    "Qte Commandee", "Qte Restante",
-    "Date Expedition",
-    "OF Associe",
-    "Feu Matiere", "Lancable", "Alerte",
-]
 
-SE_ROW_STYLE = "background-color: #dbeafe; color: #1e3a5f;"
+def _esc(value: object) -> str:
+    return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _style_se_row(row: pd.Series) -> pd.Series:
-    return pd.Series([SE_ROW_STYLE] * len(row), index=row.index)
+def _td(value: object, style: str = "", extra: str = "") -> str:
+    return f'<td style="padding:4px 8px;border:1px solid #e2e8f0;white-space:nowrap;{style}"{extra}>{_esc(value)}</td>'
+
+
+def _feu_td(value: object) -> str:
+    feu = str(value)
+    bg = _FEU_BG.get(feu, "")
+    fg = _FEU_FG.get(feu, "")
+    label = _FEU_LABEL.get(feu, _esc(value))
+    style = f"background:{bg};color:{fg};font-weight:600;"
+    return f'<td style="padding:4px 8px;border:1px solid #e2e8f0;white-space:nowrap;{style}">{label}</td>'
 
 
 def render_commandes_expandable(df: pd.DataFrame) -> None:
@@ -267,61 +272,69 @@ def render_commandes_expandable(df: pd.DataFrame) -> None:
         return
 
     df = format_dates_for_display(df)
+    cols = [c for c in _DISPLAY_COLS if c in df.columns]
+    feu_cols = {"Feu Matiere", "Feu Capacite", "Feu Ligne"}
 
-    is_parent = df["Type Flux"] != "sous-ensemble"
-    parents = df[is_parent].copy()
-    children = df[~is_parent].copy()
+    header_cells = "".join(
+        f'<th style="padding:6px 8px;border:1px solid #cbd5e1;background:#3b5998;color:#fff;'
+        f'white-space:nowrap;text-align:left;">{_esc(c)}</th>'
+        for c in cols
+    )
+    header_toggle = (
+        '<th style="padding:6px 8px;border:1px solid #cbd5e1;background:#3b5998;'
+        'color:#fff;width:32px;"></th>'
+    )
 
-    parent_cols = [c for c in COLS_PARENT if c in df.columns]
-    child_cols = [c for c in COLS_ENFANT if c in df.columns]
+    tbody_rows: list[str] = []
+    group_id = 0
 
-    for _, parent_row in parents.iterrows():
-        of_associe = str(parent_row.get("OF Associe", "")).strip()
-        feu = str(parent_row.get("Feu Ligne", ""))
-        emoji = FEU_EMOJI.get(feu, "⚪")
-        n_cmd = str(parent_row.get("N Commande", ""))
-        article = str(parent_row.get("Article", ""))
-        designation = str(parent_row.get("Designation", ""))[:40]
-        client = str(parent_row.get("Nom Client", ""))
-        date_exp = str(parent_row.get("Date Expedition", ""))
+    for _, row in df.iterrows():
+        is_se = str(row.get("Type Flux", "")) == "sous-ensemble"
+        feu = str(row.get("Feu Ligne", ""))
+        bg = _FEU_BG.get(feu, "#ffffff") if not is_se else "#dbeafe"
+        fg = _FEU_FG.get(feu, "#1a202c") if not is_se else "#1e3a5f"
+        row_style = f"background:{bg};color:{fg};"
 
-        my_children = children[children["OF Associe"] == of_associe] if of_associe else pd.DataFrame()
-        has_children = not my_children.empty
+        if not is_se:
+            group_id += 1
+            current_group = group_id
 
-        if has_children:
-            label = f"{emoji} {n_cmd} — {article} | {designation} | {client} | {date_exp}  ▶ {len(my_children)} sous-ensemble(s)"
-            with st.expander(label, expanded=False):
-                parent_display = pd.DataFrame([parent_row[parent_cols]])
-                styled_parent = parent_display.style.apply(
-                    lambda row: pd.Series(
-                        [f"background-color: {_feu_bg(feu)}; color: {_feu_fg(feu)};"] * len(row),
-                        index=row.index,
-                    ),
-                    axis=1,
-                )
-                st.dataframe(styled_parent, use_container_width=True, hide_index=True)
+        cells = "".join(
+            _feu_td(row[c]) if c in feu_cols else _td(row[c], f"color:{fg};" if fg else "")
+            for c in cols
+        )
 
-                se_display = my_children[child_cols].copy()
-                styled_se = se_display.style.apply(_style_se_row, axis=1)
-                st.dataframe(styled_se, use_container_width=True, hide_index=True)
-        else:
-            parent_display = pd.DataFrame([parent_row[parent_cols]])
-            styled = parent_display.style.apply(
-                lambda row: pd.Series(
-                    [f"background-color: {_feu_bg(feu)}; color: {_feu_fg(feu)};"] * len(row),
-                    index=row.index,
-                ),
-                axis=1,
+        if not is_se:
+            toggle_td = (
+                f'<td style="padding:4px 8px;border:1px solid #e2e8f0;text-align:center;'
+                f'cursor:pointer;user-select:none;" '
+                f'onclick="var g=this.getAttribute(\'data-gid\');'
+                f'var rows=document.querySelectorAll(\'tr[data-group=\\\'\'+g+\'\\\']\');'
+                f'var open=this.textContent===\'▶\';'
+                f'rows.forEach(function(r){{r.style.display=open?\'\':\'none\'}});'
+                f'this.textContent=open?\'▼\':\'▶\';" '
+                f'data-gid="{current_group}">▶</td>'
             )
-            st.dataframe(styled, use_container_width=True, hide_index=True)
+            tbody_rows.append(f'<tr style="{row_style}">{toggle_td}{cells}</tr>')
+        else:
+            empty_td = '<td style="padding:4px 8px;border:1px solid #e2e8f0;"></td>'
+            tbody_rows.append(
+                f'<tr data-group="{current_group}" style="{row_style}font-style:italic;display:none;">'
+                f'{empty_td}{cells}</tr>'
+            )
 
-
-def _feu_bg(feu: str) -> str:
-    return {"VERT": "#dcfce7", "ORANGE": "#fde68a", "ROUGE": "#fecaca"}.get(feu, "transparent")
-
-
-def _feu_fg(feu: str) -> str:
-    return {"VERT": "#166534", "ORANGE": "#92400e", "ROUGE": "#991b1b"}.get(feu, "inherit")
+    html = f"""
+<div style="overflow-x:auto;max-height:600px;overflow-y:auto;">
+<table style="border-collapse:collapse;font-size:13px;width:100%;font-family:sans-serif;">
+<thead><tr>{header_toggle}{header_cells}</tr></thead>
+<tbody>{"".join(tbody_rows)}</tbody>
+</table>
+</div>
+<script>
+document.querySelectorAll('[data-group]').forEach(function(r){{r.style.display='none';}});
+</script>
+"""
+    st.html(html)
 
 
 def render_week_focus_gantt(df_charge_segments: pd.DataFrame, df_plan: pd.DataFrame) -> None:
