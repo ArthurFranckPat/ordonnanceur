@@ -285,8 +285,18 @@ def render_commandes_expandable(df: pd.DataFrame) -> None:
         'color:#fff;width:32px;"></th>'
     )
 
+    groups_with_children: set[int] = set()
+    tmp_group = 0
+    for _, row in df.iterrows():
+        is_se = str(row.get("Type Flux", "")) == "sous-ensemble"
+        if not is_se:
+            tmp_group += 1
+        else:
+            groups_with_children.add(tmp_group)
+
     tbody_rows: list[str] = []
     group_id = 0
+    empty_td = '<td style="padding:4px 8px;border:1px solid #e2e8f0;"></td>'
 
     for _, row in df.iterrows():
         is_se = str(row.get("Type Flux", "")) == "sous-ensemble"
@@ -305,19 +315,21 @@ def render_commandes_expandable(df: pd.DataFrame) -> None:
         )
 
         if not is_se:
-            toggle_td = (
-                f'<td style="padding:4px 8px;border:1px solid #e2e8f0;text-align:center;'
-                f'cursor:pointer;user-select:none;" '
-                f'onclick="var g=this.getAttribute(\'data-gid\');'
-                f'var rows=document.querySelectorAll(\'tr[data-group=\\\'\'+g+\'\\\']\');'
-                f'var open=this.textContent===\'▶\';'
-                f'rows.forEach(function(r){{r.style.display=open?\'\':\'none\'}});'
-                f'this.textContent=open?\'▼\':\'▶\';" '
-                f'data-gid="{current_group}">▶</td>'
-            )
+            if current_group in groups_with_children:
+                toggle_td = (
+                    f'<td style="padding:4px 8px;border:1px solid #e2e8f0;text-align:center;'
+                    f'cursor:pointer;user-select:none;font-size:11px;" '
+                    f'onclick="var g=this.getAttribute(\'data-gid\');'
+                    f'var rows=document.querySelectorAll(\'tr[data-group=\\\'\'+g+\'\\\']\');'
+                    f'var open=this.textContent===\'＋\';'
+                    f'rows.forEach(function(r){{r.style.display=open?\'\':\'none\'}});'
+                    f'this.textContent=open?\'－\':\'＋\';" '
+                    f'data-gid="{current_group}">＋</td>'
+                )
+            else:
+                toggle_td = empty_td
             tbody_rows.append(f'<tr style="{row_style}">{toggle_td}{cells}</tr>')
         else:
-            empty_td = '<td style="padding:4px 8px;border:1px solid #e2e8f0;"></td>'
             tbody_rows.append(
                 f'<tr data-group="{current_group}" style="{row_style}font-style:italic;display:none;">'
                 f'{empty_td}{cells}</tr>'
