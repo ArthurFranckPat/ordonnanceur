@@ -12,6 +12,7 @@ import re
 import altair as alt
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from moteur_ordonnancement import PARAMS, export_xl, run
 
@@ -335,18 +336,20 @@ def render_commandes_expandable(df: pd.DataFrame) -> None:
                 f'{empty_td}{cells}</tr>'
             )
 
-    html = f"""
-<div style="overflow-x:auto;max-height:600px;overflow-y:auto;">
-<table style="border-collapse:collapse;font-size:13px;width:100%;font-family:sans-serif;">
+    n_rows = len(df)
+    height = min(max(n_rows * 32 + 60, 200), 700)
+    html = f"""<!DOCTYPE html><html><body style="margin:0;padding:0;font-family:sans-serif;">
+<div style="overflow-x:auto;overflow-y:auto;max-height:{height}px;">
+<table style="border-collapse:collapse;font-size:13px;width:100%;">
 <thead><tr>{header_toggle}{header_cells}</tr></thead>
 <tbody>{"".join(tbody_rows)}</tbody>
 </table>
 </div>
 <script>
-document.querySelectorAll('[data-group]').forEach(function(r){{r.style.display='none';}});
+document.querySelectorAll('tr[data-group]').forEach(function(r){{r.style.display='none';}});
 </script>
-"""
-    st.html(html)
+</body></html>"""
+    components.html(html, height=height + 20, scrolling=False)
 
 
 def render_week_focus_gantt(df_charge_segments: pd.DataFrame, df_plan: pd.DataFrame) -> None:
