@@ -234,6 +234,96 @@ def style_commandes_table(df: pd.DataFrame):
     return df.style.apply(style_row, axis=1)
 
 
+FEU_EMOJI = {"VERT": "🟢", "ORANGE": "🟡", "ROUGE": "🔴"}
+
+COLS_PARENT = [
+    "N Commande", "Ligne", "Code Client", "Nom Client",
+    "Article", "Designation",
+    "Qte Commandee", "Qte Restante",
+    "Date Expedition", "Date Besoin Prod",
+    "OF Associe", "Source Couverture",
+    "Feu Matiere", "Feu Capacite", "Feu Ligne",
+    "Lancable", "Alerte",
+]
+
+COLS_ENFANT = [
+    "Article", "Designation",
+    "Qte Commandee", "Qte Restante",
+    "Date Expedition",
+    "OF Associe",
+    "Feu Matiere", "Lancable", "Alerte",
+]
+
+SE_ROW_STYLE = "background-color: #dbeafe; color: #1e3a5f;"
+
+
+def _style_se_row(row: pd.Series) -> pd.Series:
+    return pd.Series([SE_ROW_STYLE] * len(row), index=row.index)
+
+
+def render_commandes_expandable(df: pd.DataFrame) -> None:
+    if df.empty:
+        st.info("Aucune commande.")
+        return
+
+    df = format_dates_for_display(df)
+
+    is_parent = df["Type Flux"] != "sous-ensemble"
+    parents = df[is_parent].copy()
+    children = df[~is_parent].copy()
+
+    parent_cols = [c for c in COLS_PARENT if c in df.columns]
+    child_cols = [c for c in COLS_ENFANT if c in df.columns]
+
+    for _, parent_row in parents.iterrows():
+        of_associe = str(parent_row.get("OF Associe", "")).strip()
+        feu = str(parent_row.get("Feu Ligne", ""))
+        emoji = FEU_EMOJI.get(feu, "⚪")
+        n_cmd = str(parent_row.get("N Commande", ""))
+        article = str(parent_row.get("Article", ""))
+        designation = str(parent_row.get("Designation", ""))[:40]
+        client = str(parent_row.get("Nom Client", ""))
+        date_exp = str(parent_row.get("Date Expedition", ""))
+
+        my_children = children[children["OF Associe"] == of_associe] if of_associe else pd.DataFrame()
+        has_children = not my_children.empty
+
+        if has_children:
+            label = f"{emoji} {n_cmd} — {article} | {designation} | {client} | {date_exp}  ▶ {len(my_children)} sous-ensemble(s)"
+            with st.expander(label, expanded=False):
+                parent_display = pd.DataFrame([parent_row[parent_cols]])
+                styled_parent = parent_display.style.apply(
+                    lambda row: pd.Series(
+                        [f"background-color: {_feu_bg(feu)}; color: {_feu_fg(feu)};"] * len(row),
+                        index=row.index,
+                    ),
+                    axis=1,
+                )
+                st.dataframe(styled_parent, use_container_width=True, hide_index=True)
+
+                se_display = my_children[child_cols].copy()
+                styled_se = se_display.style.apply(_style_se_row, axis=1)
+                st.dataframe(styled_se, use_container_width=True, hide_index=True)
+        else:
+            parent_display = pd.DataFrame([parent_row[parent_cols]])
+            styled = parent_display.style.apply(
+                lambda row: pd.Series(
+                    [f"background-color: {_feu_bg(feu)}; color: {_feu_fg(feu)};"] * len(row),
+                    index=row.index,
+                ),
+                axis=1,
+            )
+            st.dataframe(styled, use_container_width=True, hide_index=True)
+
+
+def _feu_bg(feu: str) -> str:
+    return {"VERT": "#dcfce7", "ORANGE": "#fde68a", "ROUGE": "#fecaca"}.get(feu, "transparent")
+
+
+def _feu_fg(feu: str) -> str:
+    return {"VERT": "#166534", "ORANGE": "#92400e", "ROUGE": "#991b1b"}.get(feu, "inherit")
+
+
 def render_week_focus_gantt(df_charge_segments: pd.DataFrame, df_plan: pd.DataFrame) -> None:
     if df_charge_segments.empty or df_plan.empty:
         st.warning("Aucune charge OF a afficher.")
@@ -582,9 +672,7 @@ def main() -> None:
 
     with tabs[0]:
         st.subheader("Vue commandes")
-        df_cmd_display = format_dates_for_display(df_cmd)
-        styled_cmd = style_commandes_table(df_cmd_display)
-        st.dataframe(styled_cmd, use_container_width=True, height=560)
+        render_commandes_expandable(df_cmd)
 
     with tabs[1]:
         st.subheader("Detail des manquants")
