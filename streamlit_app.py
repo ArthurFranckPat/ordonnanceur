@@ -216,6 +216,24 @@ def style_plan_charge_matrix(df: pd.DataFrame, capacity_by_week: dict[str, float
     return df.style.apply(style_frame, axis=None).format("{:.1f}")
 
 
+def style_commandes_table(df: pd.DataFrame):
+    if df.empty or "Feu Ligne" not in df.columns:
+        return df
+
+    color_map = {
+        "VERT": "background-color: #dcfce7; color: #166534;",
+        "ORANGE": "background-color: #fde68a; color: #92400e;",
+        "ROUGE": "background-color: #fecaca; color: #991b1b;",
+    }
+
+    def style_row(row: pd.Series) -> pd.Series:
+        feu = row.get("Feu Ligne", "")
+        style = color_map.get(feu, "")
+        return pd.Series([style] * len(row), index=row.index)
+
+    return df.style.apply(style_row, axis=1)
+
+
 def render_week_focus_gantt(df_charge_segments: pd.DataFrame, df_plan: pd.DataFrame) -> None:
     if df_charge_segments.empty or df_plan.empty:
         st.warning("Aucune charge OF a afficher.")
@@ -564,7 +582,9 @@ def main() -> None:
 
     with tabs[0]:
         st.subheader("Vue commandes")
-        st.dataframe(format_dates_for_display(df_cmd), use_container_width=True, height=560)
+        df_cmd_display = format_dates_for_display(df_cmd)
+        styled_cmd = style_commandes_table(df_cmd_display)
+        st.dataframe(styled_cmd, use_container_width=True, height=560)
 
     with tabs[1]:
         st.subheader("Detail des manquants")
