@@ -1,135 +1,96 @@
-# Gestion du calendrier des jours ouvrés
-import numpy as np
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+from typing import List
+
 import pandas as pd
-from datetime import datetime, timedelta, date
-from typing import List, Optional, Set
-
-try:
-    import holidays
-    HOLIDAYS_AVAILABLE = True
-except ImportError:
-    HOLIDAYS_AVAILABLE = False
 
 
-class BusinessCalendar:
-    """Gère le calcul des jours ouvrés"""
-    
-    def __init__(
-        self,
-        closures: Optional[pd.DataFrame] = None,
-        country: str = "FR",
-        weekmask: str = "1111100"  # Lun-Ven = ouvrés
-    ):
-        """
-        Args:
-            closures: DataFrame avec colonnes [date, description]
-            country: Code pays pour jours fériés (FR, US, etc.)
-            weekmask: 7 chars, 1=ouvré, 0=weekend (Lun-Dim)
-        """
-        self.weekmask = weekmask
-        self.closures = self._parse_closures(closures)
-        self.country = country
-        self.holidays = self._load_holidays(country)
-        
-    def _parse_closures(self, closures: Optional[pd.DataFrame]) -> Set[date]:
-        """Parse les fermetures personnalisées"""
-        if closures is None or closures.empty:
-            return set()
-            
-        closure_dates = set()
-        for _, row in closures.iterrows():
-            try:
-                d = pd.to_datetime(row["date"]).date()
-                closure_dates.add(d)
-            except:
-                pass
-                
-        return closure_dates
-    
-    def _load_holidays(self, country: str) -> List[date]:
-        """Charge les jours fériés pour le pays"""
-        if not HOLIDAYS_AVAILABLE:
-            # Fallback: jours fériés France codés en dur
-            return self._get_french_holidays()
-        
-        try:
-            year = datetime.now().year
-            holiday_obj = holidays.CountryHoliday(country, years=range(year, year + 2))
-            return list(holiday_obj.keys())
-        except:
-            return self._get_french_holidays()
-    
-    def _get_french_holidays(self) -> List[date]:
-        """Jours fériés France (fallback)"""
-        year = datetime.now().year
-        return [
-            date(year, 1, 1),    # Jour de l'an
-            date(year, 5, 1),    # Fête du travail
-            date(year, 5, 8),    # Victoire 1945
-            date(year, 7, 14),   # Fête nationale
-            date(year, 8, 15),   # Assomption
-            date(year, 11, 1),   # Toussaint
-            date(year, 11, 11),  # Armistice
-            date(year, 12, 25),  # Noël
-        ]
-    
-    def is_business_day(self, d: date) -> bool:
-        """Vérifie si une date est un jour ouvré"""
-        # Vérifier weekend via weekmask
-        weekday = d.weekday()  # 0=Lundi, 6=Dimanche
-        if self.weekmask[weekday] == "0":
-            return False
-            
-        # Vérifier jour férié
-        if d in self.holidays:
-            return False
-            
-        # Vérifier fermeture personnalisée
-        if d in self.closures:
-            return False
-            
-        return True
-    
-    def add_business_days(self, start_date: date, n_days: int) -> date:
-        """Ajoute n jours ouvrés à une date"""
-        if n_days == 0:
-            return start_date
-            
-        # Utiliser numpy pour efficacité
-        start_np = np.datetime64(start_date)
-        
-        # Construire liste des jours fériés + fermetures au format numpy
-        all_exclusions = sorted(list(self.holidays) + list(self.closures))
-        holidays_np = [np.datetime64(d) for d in all_exclusions]
-        
-        result = np.busday_offset(
-            start_np,
-            n_days,
-            roll="forward",
-            holidays=holidays_np if holidays_np else None,
-            weekmask=self.weekmask
-        )
-        
-        return result.astype(date)
-    
-    def subtract_business_days(self, start_date: date, n_days: int) -> date:
-        """Soustrait n jours ouvrés d'une date"""
-        return self.add_business_days(start_date, -n_days)
-    
-    def get_business_days_between(self, start_date: date, end_date: date) -> int:
-        """Nombre de jours ouvrés entre deux dates"""
-        if start_date > end_date:
-            return 0
-            
-        start_np = np.datetime64(start_date)
-        end_np = np.datetime64(end_date)
-        
-        all_exclusions = sorted(list(self.holidays) + list(self.closures))
-        holidays_np = [np.datetime64(d) for d in all_exclusions]
-        
-        return np.busday_count(
-            start_np,
-            end_np,
-            holidays=holidays_np if holidays_np else None,
-            weekmask=self.weekmask
-        )
+FERMETURES_AERECO: List[datetime] = []
+
+
+def _est_ferie_france(date: datetime) -> bool:
+    y = date.year
+    fixes = [
+        datetime(y, 1, 1), datetime(y, 5, 1), datetime(y, 5, 8), datetime(y, 7, 14),
+        datetime(y, 8, 15), datetime(y, 11, 1), datetime(y, 11, 11), datetime(y, 12, 25),
+    ]
+    a = y % 19; b = y // 100; c = y % 100; d = b // 4; e = b % 4
+    f = (b + 8) // 25; g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4; k = c % 4; l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    mo = (h + l - 7 * m + 114) // 31
+    da = ((h + l - 7 * m + 114) % 31) + 1
+    paques = datetime(y, mo, da)
+    mobiles = [paques + timedelta(days=1), paques + timedelta(days=39), paques + timedelta(days=50)]
+    return date in fixes or date in mobiles
+
+
+def est_jour_ouvre(date: datetime, fermetures: List[datetime] = FERMETURES_AERECO) -> bool:
+    return date.weekday() < 5 and not _est_ferie_france(date) and date not in fermetures
+
+
+def soustraire_jours_ouvres(
+    date: datetime, nb: int, fermetures: List[datetime] = FERMETURES_AERECO
+) -> datetime:
+    if pd.isna(date):
+        return pd.NaT  # type: ignore[return-value]
+    if isinstance(date, pd.Timestamp):
+        date = date.to_pydatetime()
+    r = date
+    n = nb
+    while n > 0:
+        r -= timedelta(days=1)
+        if est_jour_ouvre(r, fermetures):
+            n -= 1
+    return r
+
+
+def generer_jours_ouvres(
+    date_debut: datetime, date_fin: datetime, fermetures: List[datetime] = FERMETURES_AERECO
+) -> List[datetime]:
+    jours = []
+    d = date_debut
+    while d <= date_fin:
+        if est_jour_ouvre(d, fermetures):
+            jours.append(d)
+        d += timedelta(days=1)
+    return jours
+
+
+def dernier_jour_ouvre_avant_ou_egal(
+    date_cible: datetime, fermetures: List[datetime] = FERMETURES_AERECO
+) -> datetime:
+    if isinstance(date_cible, pd.Timestamp):
+        date_cible = date_cible.to_pydatetime()
+    d = date_cible
+    while not est_jour_ouvre(d, fermetures):
+        d -= timedelta(days=1)
+    return d
+
+
+def jour_ouvre_precedent(
+    date_cible: datetime, fermetures: List[datetime] = FERMETURES_AERECO
+) -> datetime:
+    if isinstance(date_cible, pd.Timestamp):
+        date_cible = date_cible.to_pydatetime()
+    d = date_cible - timedelta(days=1)
+    while not est_jour_ouvre(d, fermetures):
+        d -= timedelta(days=1)
+    return d
+
+
+def to_python_datetime(value: object) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):  # type: ignore[arg-type]
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, pd.Timestamp):
+        return value.to_pydatetime()
+    if isinstance(value, datetime):
+        return value
+    return None

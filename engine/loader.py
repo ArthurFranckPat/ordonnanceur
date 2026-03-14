@@ -1,103 +1,119 @@
-# Chargeur de données CSV
+from __future__ import annotations
+
 import pandas as pd
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-from datetime import datetime
+from typing import Dict
 
-from .config import Config
+from .config import Config, STATUTS_FERMES_LANCES
 
 
-class DataLoader:
-    """Charge les fichiers CSV d'entrée"""
-    
-    REQUIRED_FILES = [
-        "commandes_clients.csv",
-        "stock.csv", 
-        "receptions_attendues.csv",
-        "of_candidats.csv",
-        "composants_of.csv",
-        "referentiel_articles.csv"
-    ]
-    
-    OPTIONAL_FILES = [
-        "fermetures.csv"
-    ]
-    
-    def __init__(self, data_dir: str, config: Config):
-        self.data_dir = Path(data_dir)
-        self.config = config
-        
-    def load_all(self) -> Dict[str, pd.DataFrame]:
-        """Charge tous les fichiers CSV"""
-        data = {}
-        
-        # Fichiers requis
-        for filename in self.REQUIRED_FILES:
-            filepath = self.data_dir / filename
-            if not filepath.exists():
-                raise FileNotFoundError(f"Fichier requis manquant: {filepath}")
-            data[filename] = self._load_csv(filepath)
-            
-        # Fichiers optionnels
-        for filename in self.OPTIONAL_FILES:
-            filepath = self.data_dir / filename
-            if filepath.exists():
-                data[filename] = self._load_csv(filepath)
-            else:
-                # Créer DataFrame vide avec colonnes attendues
-                if filename == "fermetures.csv":
-                    data[filename] = pd.DataFrame(columns=["date", "description"])
-                    
-        return data
-    
-    def _load_csv(self, filepath: Path) -> pd.DataFrame:
-        """Charge un fichier CSV avec parsing des dates"""
-        df = pd.read_csv(filepath)
-        
-        # Parser les colonnes date connues
-        date_columns = [
-            "shipment_date", "expected_date", "end_date", 
-            "date_besoin_prod", "date"
-        ]
-        
-        for col in date_columns:
-            if col in df.columns:
-                df[col] = pd.to_datetime(df[col], errors="coerce")
-                
-        return df
-    
-    def validate_data(self, data: Dict[str, pd.DataFrame]) -> List[str]:
-        """Valide les données chargées et retourne les erreurs"""
-        errors = []
-        
-        # Vérifier commandes
-        orders = data.get("commandes_clients.csv")
-        if orders is not None:
-            required_cols = ["order_id", "item_code", "quantity", "shipment_date"]
-            missing = [c for c in required_cols if c not in orders.columns]
-            if missing:
-                errors.append(f"commandes_clients.csv: colonnes manquantes {missing}")
-                
-            # Vérifier dates valides
-            if "shipment_date" in orders.columns:
-                invalid_dates = orders["shipment_date"].isna().sum()
-                if invalid_dates > 0:
-                    errors.append(f"commandes_clients.csv: {invalid_dates} dates d'expédition invalides")
-        
-        # Vérifier stock
-        stock = data.get("stock.csv")
-        if stock is not None:
-            required_cols = ["item_code", "on_hand", "allocated"]
-            missing = [c for c in required_cols if c not in stock.columns]
-            if missing:
-                errors.append(f"stock.csv: colonnes manquantes {missing}")
-                
-        # Vérifier composants
-        components = data.get("composants_of.csv")
-        if components is not None:
-            required_cols = ["mo_number", "component_code", "required_qty"]
-            missing = [c for c in required_cols if c not in components.columns]
-            if missing:
-                errors.append(f"composants_of.csv: colonnes manquantes {missing}")
-                
-        return errors
+def _to_num(series: pd.Series) -> pd.Series:
+    if series.dtype == object:
+        series = series.astype(str).str.strip().str.replace(" ", "").str.replace(",", ".")
+    return pd.to_numeric(series, errors="coerce").fillna(0)
+
+
+def _lire_csv_normalise(
+    path: str,
+    sep: str,
+    enc: str,
+    colonnes_attendues: list,
+    skipinitialspace: bool = False,
+) -> pd.DataFrame:
+    df = pd.read_csv(path, sep=sep, encoding=enc, skipinitialspace=skipinitialspace)
+    df = df.loc[:, ~df.columns.str.startswith("Unnamed")]
+    if len(df.columns) != len(colonnes_attendues):
+        raise ValueError(
+            f"Schema inattendu pour {path}: {len(df.columns)} colonnes detectees "
+            f"({list(df.columns)}) au lieu de {len(colonnes_attendues)} {colonnes_attendues}"
+        )
+    df.columns = colonnes_attendues
+    return df
+
+
+def charger_donnees(params: dict) -> Dict[str, pd.DataFrame]:
+    sep = params["separateur_csv"]
+    enc = params["encoding"]
+    d = params["dossier_data"]
+    dfs: Dict[str, pd.DataFrame] = {}
+
+    art = _lire_csv_normalise(
+        d + "articles.csv", sep, enc,
+        ["itmref", "designation", "categorie", "type_appro", "delai"],
+        skipinitialspace=True,
+    )
+    art["delai"] = _to_num(art["delai"])
+    art["itmref"] = art["itmref"].astype(str).str.strip()
+    art["categorie"] = art["categorie"].astype(str).str.strip()
+    art["type_appro"] = art["type_appro"].astype(str).str.strip()
+    dfs["articles"] = art
+
+    stk = _lire_csv_normalise(
+        d + "stock.csv", sep, enc,
+        ["itmref", "stock_physique", "stock_alloue", "stock_bloque"],
+        skipinitialspace=True,
+    )
+    stk["itmref"] = stk["itmref"].astype(str).str.strip()
+    for c in ["stock_physique", "stock_alloue", "stock_bloque"]:
+        stk[c] = _to_num(stk[c])
+    dfs["stock"] = stk
+
+    cmd = _lire_csv_normalise(
+        d + "commandes_clients.csv", sep, enc,
+        ["sohnum", "soplin", "client_code", "client_nom", "itmref", "designation",
+         "qte_commandee", "qte_restante", "shidat", "flag_contremarque", "mfgnum_lie"],
+    )
+    cmd["itmref"] = cmd["itmref"].astype(str).str.strip()
+    for c in ["qte_commandee", "qte_restante"]:
+        cmd[c] = _to_num(cmd[c])
+    cmd["shidat"] = pd.to_datetime(cmd["shidat"], format="%d/%m/%Y", errors="coerce")
+    cmd["flag_contremarque"] = _to_num(cmd["flag_contremarque"]).astype(int)
+    cmd["mfgnum_lie"] = cmd["mfgnum_lie"].astype(str).str.strip()
+    dfs["commandes"] = cmd
+
+    of = _lire_csv_normalise(
+        d + "of_entetes.csv", sep, enc,
+        ["mfgnum", "itmref", "designation", "mfgsta", "mfgsta_lib",
+         "enddat", "extqty", "cplqty", "qte_restante"],
+    )
+    of["itmref"] = of["itmref"].astype(str).str.strip()
+    of["mfgnum"] = of["mfgnum"].astype(str).str.strip()
+    for c in ["extqty", "cplqty", "qte_restante"]:
+        of[c] = _to_num(of[c])
+    of["enddat"] = pd.to_datetime(of["enddat"], format="%d/%m/%Y", errors="coerce")
+    dfs["of_entetes"] = of
+
+    comp = _lire_csv_normalise(
+        d + "of_composants.csv", sep, enc,
+        ["mfgnum", "composant", "designation", "qty_requise", "dat_besoin"],
+    )
+    comp["mfgnum"] = comp["mfgnum"].astype(str).str.strip()
+    comp["composant"] = comp["composant"].astype(str).str.strip()
+    comp["qty_requise"] = _to_num(comp["qty_requise"])
+    comp["dat_besoin"] = pd.to_datetime(comp["dat_besoin"], format="%d/%m/%Y", errors="coerce")
+    dfs["of_composants"] = comp
+
+    oa = _lire_csv_normalise(
+        d + "receptions_oa.csv", sep, enc,
+        ["pohnum", "itmref", "fournisseur", "qte_restante", "date_reception"],
+    )
+    oa["itmref"] = oa["itmref"].astype(str).str.strip()
+    oa["qte_restante"] = _to_num(oa["qte_restante"])
+    oa["date_reception"] = pd.to_datetime(oa["date_reception"], format="%d/%m/%Y", errors="coerce")
+    dfs["receptions_oa"] = oa
+
+    of_fermes = of[(of["mfgsta"].isin(STATUTS_FERMES_LANCES)) & (of["qte_restante"] > 0)].copy()
+    dfs["receptions_of"] = of_fermes[["mfgnum", "itmref", "qte_restante", "enddat"]].copy()
+
+    gam = _lire_csv_normalise(
+        d + "gammes.csv", sep, enc,
+        ["itmref", "poste_charge", "libelle_poste", "cadence"],
+        skipinitialspace=True,
+    )
+    gam["itmref"] = gam["itmref"].astype(str).str.strip()
+    gam["poste_charge"] = gam["poste_charge"].astype(str).str.strip()
+    gam["cadence"] = gam["cadence"].astype(str).str.replace(",", ".").str.strip()
+    gam["cadence"] = pd.to_numeric(gam["cadence"], errors="coerce").fillna(0)
+    dfs["gammes"] = gam
+
+    return dfs
