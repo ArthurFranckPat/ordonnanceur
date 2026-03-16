@@ -61,10 +61,10 @@ def charger_donnees(params: dict) -> Dict[str, pd.DataFrame]:
     cmd = _lire_csv_normalise(
         d + "commandes_clients.csv", sep, enc,
         ["sohnum", "soplin", "client_code", "client_nom", "itmref", "designation",
-         "qte_commandee", "qte_restante", "shidat", "flag_contremarque", "mfgnum_lie"],
+         "qte_commandee", "qte_allouee", "qte_restante", "shidat", "flag_contremarque", "mfgnum_lie"],
     )
     cmd["itmref"] = cmd["itmref"].astype(str).str.strip()
-    for c in ["qte_commandee", "qte_restante"]:
+    for c in ["qte_commandee", "qte_restante", "qte_allouee"]:
         cmd[c] = _to_num(cmd[c])
     cmd["shidat"] = pd.to_datetime(cmd["shidat"], format="%d/%m/%Y", errors="coerce")
     cmd["flag_contremarque"] = _to_num(cmd["flag_contremarque"]).astype(int)

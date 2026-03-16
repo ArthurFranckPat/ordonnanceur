@@ -15,6 +15,10 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from moteur_ordonnancement import PARAMS, export_xl, run
+from engine.satisfaction import calculer_satisfaction_s1, aggreg_par_client, resume_global
+from engine.supply_chain import construire_chaine_commande, generer_html_tree
+from engine.loader import charger_donnees
+from engine.allocator import preparer_donnees
 
 
 REQUIRED_FILES = [
@@ -683,6 +687,198 @@ def render_week_focus_gantt(df_charge_segments: pd.DataFrame, df_plan: pd.DataFr
     st.dataframe(format_dates_for_display(daily_view[detail_cols]), use_container_width=True, height=380)
 
 
+def render_capacity_s1(params: dict) -> None:
+    iso = params["date_reference"].isocalendar()
+    current_week = iso.week
+    current_year = iso.year
+    s1_week = current_week + 1
+    s1_year = current_year
+    if s1_week > 52:
+        s1_week = 1
+        s1_year = current_year + 1
+    st.markdown(f"### Capacité à satisfaire les besoins clients S+1 (S{s1_week:02d}-{s1_year})")
+    st.caption("Évaluation binaire par ligne de commande — une ligne est soit satisfaisable (100%), soit non satisfaisable (0%)")
+    
+    with st.spinner("Calcul de la capacité S+1..."):
+        try:
+            dfs = charger_donnees(params)
+            dfs = preparer_donnees(dfs, params)
+            df_resultats = calculer_satisfaction_s1(dfs, params["date_reference"])
+        except Exception as exc:
+            st.error(f"Erreur lors du calcul: {exc}")
+            return
+    
+    if df_resultats.empty:
+        st.warning("Aucune commande trouvée pour la semaine S+1.")
+        return
+    
+    resume = resume_global(df_resultats)
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric(
+        "Taux immédiat",
+        f"{resume['taux_immediat_pct']:.1f}%",
+        f"{resume['nb_satisfaisables_immediat']}/{resume['nb_lignes_total']} lignes",
+    )
+    col2.metric(
+        "Taux projeté",
+        f"{resume['taux_projete_pct']:.1f}%",
+        f"{resume['nb_satisfaisables_projete']}/{resume['nb_lignes_total']} lignes",
+    )
+    col3.metric(
+        "Lignes à risque",
+        resume['nb_lignes_total'] - resume['nb_satisfaisables_projete'],
+        "non satisfaisables même avec réceptions",
+    )
+    
+    st.markdown("#### Par client")
+    df_clients = aggreg_par_client(df_resultats)
+    if df_clients.empty:
+        st.info("Aucune donnée par client.")
+    else:
+        def style_client_row(row):
+            imm = row.get("taux_immediat_pct", 0)
+            proj = row.get("taux_projete_pct", 0)
+            if proj == 100:
+                bg = "background-color: #dcfce7; color: #166534;"
+            elif imm >= 80:
+                bg = "background-color: #fde68a; color: #92400e;"
+            else:
+                bg = "background-color: #fecaca; color: #991b1b;"
+            return [bg] * len(row)
+        
+        styled_clients = df_clients.style.apply(style_client_row, axis=1)
+        st.dataframe(styled_clients, use_container_width=True, height=300)
+    
+    st.markdown("#### Détail par ligne de commande")
+    view_mode = st.radio(
+        "Filtrer par statut",
+        options=["Toutes", "Non satisfaisables (immédiat)", "Non satisfaisables (projeté)"],
+        horizontal=True,
+        key="capacity_s1_filter",
+    )
+    
+    if view_mode == "Non satisfaisables (immédiat)":
+        df_detail = df_resultats[~df_resultats["satisfaisable_immediat"]]
+    elif view_mode == "Non satisfaisables (projeté)":
+        df_detail = df_resultats[~df_resultats["satisfaisable_projete"]]
+    else:
+        df_detail = df_resultats
+    
+    display_cols = [
+        "sohnum", "soplin", "client_code", "client_nom",
+        "itmref", "qte_restante", "shidat", "type_ligne",
+        "satisfaisable_immediat", "satisfaisable_projete",
+        "motif_imm", "motif_proj",
+    ]
+    display_cols = [c for c in display_cols if c in df_detail.columns]
+    
+    df_display = format_dates_for_display(df_detail[display_cols])
+    df_display = df_display.rename(columns={
+        "sohnum": "Commande",
+        "soplin": "Ligne",
+        "client_code": "Code Client",
+        "client_nom": "Client",
+        "itmref": "Article",
+        "qte_restante": "Qté restante",
+        "shidat": "Date expedition",
+        "type_ligne": "Type",
+        "satisfaisable_immediat": "OK immédiat",
+        "satisfaisable_projete": "OK projeté",
+        "motif_imm": "Motif immédiat",
+        "motif_proj": "Motif projeté",
+    })
+    
+    st.dataframe(df_display, use_container_width=True, height=400)
+
+
+def render_supply_chain_view(df_cmd: pd.DataFrame, params: dict) -> None:
+    st.markdown("### Chaîne d'approvisionnement")
+    st.caption("Visualisez la chaîne complète depuis la commande jusqu'aux composants")
+    
+    if df_cmd.empty:
+        st.warning("Aucune commande disponible.")
+        return
+    
+    dfs = charger_donnees(params)
+    dfs = preparer_donnees(dfs, params)
+    
+    articles = sorted(df_cmd["Article"].unique().tolist())
+    article_sel = st.selectbox(
+        "Article",
+        options=articles,
+        key="sc_article",
+    )
+    
+    cmd_article = df_cmd[df_cmd["Article"] == article_sel]
+    commandes = sorted(cmd_article["N Commande"].unique().tolist())
+    sohnum = st.selectbox(
+        "Commande",
+        options=commandes,
+        key="sc_sohnum",
+    )
+    
+    lignes_cmd = cmd_article[cmd_article["N Commande"] == sohnum]["Ligne"].unique().tolist()
+    soplin = st.selectbox(
+        "Ligne",
+        options=sorted(lignes_cmd),
+        key="sc_soplin",
+    )
+    
+    if st.button("Afficher la chaîne", type="primary"):
+        with st.spinner("Construction de la chaîne..."):
+            try:
+                chaine = construire_chaine_commande(sohnum, str(soplin), dfs)
+            except Exception as exc:
+                st.error(f"Erreur: {exc}")
+                return
+        
+        if "error" in chaine:
+            st.error(chaine["error"])
+            return
+        
+        col_info, col_graph = st.columns([1, 2])
+        with col_info:
+            st.markdown("#### Résumé")
+            st.write(f"**Client:** {chaine.get('client_nom', '')}")
+            st.write(f"**Article:** {chaine.get('itmref', '')}")
+            st.write(f"**Qté restante:** {chaine.get('qte_restante', 0):.0f}")
+            st.write(f"**Stock dispo:** {chaine.get('stock_dispo', 0):.0f}")
+            
+            feu = chaine.get("feu", "ROUGE")
+            feu_colors = {"VERT": "🟢", "ORANGE": "🟠", "ROUGE": "🔴"}
+            st.markdown(f"**Statut:** {feu_colors.get(feu, '⚪')} {feu}")
+            
+            if chaine.get("message"):
+                st.info(chaine["message"])
+            
+            def count_nodes(n: dict) -> dict:
+                counts = {"commandes": 0, "of": 0, "composants": 0}
+                def walk(node):
+                    if node.get("type") == "commande":
+                        counts["commandes"] += 1
+                    elif node.get("type") == "of":
+                        counts["of"] += 1
+                    elif node.get("type") == "composant":
+                        counts["composants"] += 1
+                    for e in node.get("enfants", []):
+                        walk(e)
+                    for c in node.get("composants", []):
+                        walk(c)
+                walk(n)
+                return counts
+            
+            counts = count_nodes(chaine)
+            st.markdown("#### Niveaux")
+            st.write(f"• OF analysés: {counts['of']}")
+            st.write(f"• Composants: {counts['composants']}")
+        
+        with col_graph:
+            st.markdown("#### Visualisation")
+            html_tree = generer_html_tree(chaine)
+            components.html(html_tree, height=600, scrolling=True)
+
+
 def main() -> None:
     st.set_page_config(
         page_title="Ordonnancement OF",
@@ -825,6 +1021,8 @@ def main() -> None:
     )
 
     tabs = st.tabs([
+        "Capacité S+1",
+        "Chaîne Appro",
         "Commandes",
         "Detail manquants",
         "Gantt charge hebdo",
@@ -834,21 +1032,28 @@ def main() -> None:
     ])
 
     with tabs[0]:
+        render_capacity_s1(params)
+
+    
+    with tabs[1]:
+        render_supply_chain_view(df_cmd, params)
+
+    with tabs[2]:
         st.subheader("Vue commandes")
         render_commandes_expandable(df_cmd)
 
-    with tabs[1]:
+    with tabs[2]:
         st.subheader("Detail des manquants")
         if df_det.empty:
             st.success("Aucun composant manquant sur ce run.")
         else:
             st.dataframe(format_dates_for_display(df_det), use_container_width=True, height=560)
 
-    with tabs[2]:
+    with tabs[3]:
         st.subheader("Vision semaine - OF par poste de charge")
         render_week_focus_gantt(df_charge_segments, df_plan)
 
-    with tabs[3]:
+    with tabs[4]:
         st.subheader("Plan de charge")
         if df_plan.empty:
             st.warning("Aucun plan de charge genere.")
@@ -870,14 +1075,14 @@ def main() -> None:
             styled_plan_matrix = style_plan_charge_matrix(plan_matrix, capacity_by_week, display_mode)
             st.dataframe(styled_plan_matrix, use_container_width=True, height=560)
 
-    with tabs[4]:
+    with tabs[5]:
         st.subheader("Composants critiques")
         if df_crit.empty:
             st.success("Aucun composant critique detecte.")
         else:
             st.dataframe(format_dates_for_display(df_crit), use_container_width=True, height=560)
 
-    with tabs[5]:
+    with tabs[6]:
         st.subheader("Logs moteur")
         st.code(logs or "Aucun log.", language="text")
 

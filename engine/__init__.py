@@ -11,7 +11,9 @@ from .config import Config
 from .exporter import export_xl
 from .feasibility import alloc_seq_composants, eval_of
 from .loader import charger_donnees
+from .satisfaction import aggreg_par_client, calculer_satisfaction_s1, filtrer_commandes_s1, resume_global
 from .scheduler import calculer_plan_charge
+from .supply_chain import construire_chaine_commande, generer_graphviz
 
 __version__ = "3.0.0"
 
@@ -146,4 +148,8 @@ def run(
     return df_cmd, df_det, df_plan, df_crit, df_charge_segments
 
 
-__all__ = ["run", "export_xl", "PARAMS", "Config"]
+__all__ = [
+    "run", "export_xl", "PARAMS", "Config",
+    "calculer_satisfaction_s1", "filtrer_commandes_s1", "aggreg_par_client", "resume_global",
+    "construire_chaine_commande", "generer_graphviz",
+]
